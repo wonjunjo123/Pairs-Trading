@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import itertools
 from dataclasses import dataclass, asdict
+from tqdm import tqdm
 
 import numpy as np
 import pandas as pd
@@ -217,7 +218,7 @@ def screen_universe(
     results: list[PairResult] = []
     n_tests = 0
 
-    for sector, tickers in universe.items():
+    for sector, tickers in tqdm(universe.items()):
         print(f"\n[sector] {sector}: {tickers}")
         log_px = download_log_prices(tickers, start, end)
         if log_px.shape[1] < 2:
