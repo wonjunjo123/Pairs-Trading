@@ -20,7 +20,9 @@ Observation	Why it matters
 KO/PEP didn't make the list	Confirms your original pair has no edge — your screen correctly rejects it.
 6 pairs pass the in-sample filter (AMZN/GOOGL, MA/V, …)	Looks promising at first glance.
 coint_p_bonferroni_ok is False for all of them	None survive multiple-testing correction — 91 tests at α=0.05 means ~4-5 false positives expected by chance.
-coint_p_test is 0.17–0.97 for all	The cointegration does not hold out-of-sample. In-sample cointegration is largely a mirage here.
+coint_p_test is 0.17–0.97 for all	The cointegration does not hold out-of-sample. 
+In-sample cointegration is largely a mirage here.
+
 That last point is the whole lesson of quantitative pairs research, and your project now demonstrates it rather than ignoring it. The honest write-up — "I screened 91 pairs, found 6 in-sample hits, and showed none survived Bonferroni or held out-of-sample" — is far more impressive than a cherry-picked Sharpe.
 
 So basically, I first tested these but they didn't work so I expanded the universe
