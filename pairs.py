@@ -8,37 +8,28 @@
 # Step 1: Import packages
 import pandas as pd
 import numpy as np
-import pandas_datareader.data as web
+import yfinance as yf
 import statsmodels.api as sm
 from statsmodels.tsa.stattools import coint
 import matplotlib.pyplot as plt
 from datetime import timedelta
 
 # ===============================
-# Step 2: Download Stooq data
+# Step 2: Download data
 # ===============================
 s1 = "KO"
 s2 = "PEP"
 years = 4  # number of years to include
 
-s1data = web.DataReader(s1 + ".US", "stooq").sort_index()
-s2data = web.DataReader(s2 + ".US", "stooq").sort_index()
+import datetime
+end_date = datetime.date.today()
+start_date = end_date - datetime.timedelta(days=365 * years)
 
-# ===============================
-# Step 3: Trim to last `years` years
-# ===============================
-end_date = s1data.index[-1]
-start_date = end_date - pd.Timedelta(days=365*years)
+s1data = yf.download(s1, start=start_date, end=end_date, auto_adjust=True)
+s2data = yf.download(s2, start=start_date, end=end_date, auto_adjust=True)
 
-s1_trim = s1data.loc[s1data.index >= start_date]
-s2_trim = s2data.loc[s2data.index >= start_date]
-
-# ===============================
-# Step 4: Compute log prices and align
-# ===============================
-s1_log = np.log(s1_trim['Close'])
-s2_log = np.log(s2_trim['Close'])
-
+s1_log = np.log(s1data['Close'].squeeze())
+s2_log = np.log(s2data['Close'].squeeze())
 s1_log.name = s1
 s2_log.name = s2
 
@@ -86,11 +77,13 @@ print("\nSample spread and Z-score:")
 print(signals.head())
 
 # Plot spread and Z-score thresholds
+threshold = 2 # number of sd at which we long/short
+
 plt.figure(figsize=(12,5))
 plt.plot(spread, label='Spread')
 plt.axhline(spread_mean, color='black', linestyle='--', label='Mean')
-plt.axhline(spread_mean + 2*spread_std, color='red', linestyle='--', label='Z=+2')
-plt.axhline(spread_mean - 2*spread_std, color='green', linestyle='--', label='Z=-2')
+plt.axhline(spread_mean + threshold*spread_std, color='red', linestyle='--', label=f'Z=+{threshold}')
+plt.axhline(spread_mean - threshold*spread_std, color='green', linestyle='--', label=f'Z=-{threshold}')
 plt.title(f'{s1}/{s2} Spread and Z-score Thresholds')
 plt.legend()
 plt.show()
@@ -98,17 +91,24 @@ plt.show()
 # ===============================
 # Step 8: Generate trading signals
 # ===============================
-signals['long_entry']  = signals['Zscore'] < -2
-signals['short_entry'] = signals['Zscore'] > 2
-signals['exit']        = signals['Zscore'].abs() < 0.5
 
-signals['position'] = 0
-signals.loc[signals['long_entry'],  'position'] = 1
-signals.loc[signals['short_entry'], 'position'] = -1
-signals.loc[signals['exit'],        'position'] = 0
+signals['long_entry'] = signals['Zscore'] < -threshold
+signals['short_entry'] = signals['Zscore'] > threshold
+signals['exit'] = signals['Zscore'].abs() < 0.5
 
-# Forward-fill positions until exit
-signals['position'] = signals['position'].replace(0, np.nan).ffill().fillna(0)
+# Iterate to correctly hold positions and respect exit signals
+position = 0
+positions = []
+for _, row in signals.iterrows():
+    if row['exit']:
+        position = 0
+    elif row['long_entry']:
+        position = 1
+    elif row['short_entry']:
+        position = -1
+    positions.append(position)
+ 
+signals['position'] = positions
 
 # ===============================
 # Step 9: Backtest PnL
