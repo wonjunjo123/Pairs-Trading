@@ -17,21 +17,23 @@
 
 from __future__ import annotations
 
+import io
 import itertools
 from dataclasses import dataclass, asdict
 
 import numpy as np
 import pandas as pd
+import requests
 import yfinance as yf
 import statsmodels.api as sm
 from statsmodels.tsa.stattools import coint, adfuller
 
 
 # -----------------------------------------------------------------------------
-# Universe: grouped by sector so we only test economically-related pairs.
-# Edit / extend these freely. Keeping groups small keeps the test count down.
+# Small hand-curated universe -- handy for a fast demo run without scraping.
+# For the real screen use build_sp500_universe() below.
 # -----------------------------------------------------------------------------
-UNIVERSE: dict[str, list[str]] = {
+DEMO_UNIVERSE: dict[str, list[str]] = {
     "beverages":   ["KO", "PEP", "MNST", "KDP", "STZ"],
     "mega_tech":   ["AAPL", "MSFT", "GOOGL", "META", "NVDA", "AMZN"],
     "banks":       ["JPM", "BAC", "WFC", "C", "USB", "PNC"],
@@ -41,6 +43,52 @@ UNIVERSE: dict[str, list[str]] = {
     "semis":       ["NVDA", "AMD", "INTC", "TXN", "QCOM", "MU"],
     "autos":       ["GM", "F", "TSLA", "TM"],
 }
+
+_SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+
+
+def build_sp500_universe(
+    level: str = "GICS Sub-Industry",
+    min_members: int = 2,
+    max_members: int | None = 20,
+) -> dict[str, list[str]]:
+    """Build a sector-grouped universe from current S&P 500 constituents.
+
+    Groups by a GICS classification scraped from Wikipedia. Defaults to
+    "GICS Sub-Industry" -- the tightest economic grouping, so pairs share a
+    genuine fundamental driver (the strongest defence against spurious
+    cointegration). Use "GICS Sector" for a broader, larger universe.
+
+    Args:
+        level: which column to group on ("GICS Sub-Industry" or "GICS Sector").
+        min_members: drop groups too small to form a pair.
+        max_members: cap group size to keep the test count (and Bonferroni
+            penalty) manageable; None for no cap. Largest groups are trimmed
+            by ticker name only as a deterministic, reproducible rule.
+    """
+    html = requests.get(_SP500_URL, headers={"User-Agent": "Mozilla/5.0"},
+                        timeout=30).text
+    table = pd.read_html(io.StringIO(html))[0]
+
+    # yfinance uses '-' where Wikipedia uses '.' (e.g. BRK.B -> BRK-B).
+    table["Symbol"] = table["Symbol"].str.replace(".", "-", regex=False)
+
+    universe: dict[str, list[str]] = {}
+    for group, rows in table.groupby(level):
+        tickers = sorted(rows["Symbol"].unique())
+        if len(tickers) < min_members:
+            continue
+        if max_members is not None:
+            tickers = tickers[:max_members]
+        # sanitise group name for use as a clean key
+        key = str(group).lower().replace(" ", "_").replace("&", "and")
+        universe[key] = tickers
+
+    n_pairs = sum(len(t) * (len(t) - 1) // 2 for t in universe.values())
+    print(f"[universe] {len(universe)} '{level}' groups, "
+          f"{sum(len(t) for t in universe.values())} tickers, "
+          f"{n_pairs} candidate pairs")
+    return universe
 
 
 @dataclass
@@ -235,7 +283,13 @@ if __name__ == "__main__":
     END = datetime.date.today()
     START = END - datetime.timedelta(days=365 * 5)   # 5 years of history
 
-    ranked = screen_universe(UNIVERSE, START, END)
+    # Full S&P 500 screen, grouped by GICS Sub-Industry. Swap for
+    # DEMO_UNIVERSE for a fast offline-ish run, or level="GICS Sector"
+    # for a broader (much larger) search.
+    universe = build_sp500_universe(level="GICS Sub-Industry",
+                                    min_members=2, max_members=20)
+
+    ranked = screen_universe(universe, START, END)
 
     if not ranked.empty:
         cols = ["sector", "y", "x", "corr", "hedge_ratio", "coint_p_train",
