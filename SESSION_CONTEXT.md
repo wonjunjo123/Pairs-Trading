@@ -70,12 +70,38 @@ pointer to METHODOLOGY.md.)
   Run with `python3 screening.py`. May want to `pip install` into the venv.
 - Run command: `python3 screening.py` → writes `screened_pairs.csv`.
 
-## Next step (agreed, NOT yet built)
-**Walk-forward backtest** of the surviving candidates (KHC/HSY, AMP/APO):
-- Rolling z-score with lookback derived from the estimated half-life.
-- Lagged position (no look-ahead).
-- Transaction costs + slippage, dollar-neutral sizing, SPY benchmark.
-- Full risk report: max drawdown, Sortino, Calmar, turnover, hit rate (not
-  Sharpe alone).
-Further out: dynamic hedge ratio via Kalman filter; Benjamini–Hochberg FDR
-instead of Bonferroni.
+## What we built this session (session 2)
+
+### 4. Walk-forward backtest — [`backtest.py`](backtest.py)
+
+Design:
+- **Rolling OLS** β = ρ(y,x) × σ_y / σ_x estimated over `max(60, 2.5 × half-life)` days, purely from past data.
+- **Z-score** from rolling spread mean/std (same window).
+- **Signal lagged 1 day** — no look-ahead.
+- **Dollar-neutral** sizing: $1 in Y, $|β| in X per unit; P&L normalised to $(1+|β|).
+- **Costs**: 7 bps one-way per leg (5bp commission + 2bp slippage), charged on both legs at every position change.
+- Uses **previous day's β** for P&L calculation (the ratio actually in effect).
+- Risk report: CAGR, Sharpe, Sortino, MaxDD, Calmar, round-trips/yr, trades, avg hold, hit rate.
+- Outputs `backtest_equity.png` (equity curves vs SPY).
+
+### Backtest results (5y ending 2026-06-29, venv Python 3.9)
+
+| Pair | CAGR | Sharpe | Sortino | MaxDD | Hit% | Trades |
+|------|------|--------|---------|-------|------|--------|
+| AMP/APO [Asset Mgmt] | +4.0% | 0.42 | 0.39 | −12.6% | 15% | 13 |
+| KHC/HSY [Packaged Foods] | +2.4% | 0.24 | 0.24 | −16.3% | 38% | 13 |
+| FOXA/FOX [Dual-Class sanity] | +0.1% | 0.05 | 0.05 | −2.9% | 25% | 12 |
+
+Key insights for recruiter narrative:
+- AMP/APO low hit rate (15%) consistent with barely-cointegrated pair — few big wins, many small losses.
+- FOXA/FOX near-zero despite being essentially the same company: tight spread + 7bps cost = no edge.
+- All Sharpes < 0.5, confirming the honest story: OOS cointegration is fragile.
+
+## Environment notes
+- All packages now in `.venv` (Python 3.9). Run with `python3 screening.py` or `python3 backtest.py`.
+- `requirements.txt` is up to date (from `pip freeze`).
+
+## Next steps (not yet built)
+- Dynamic hedge ratio via Kalman filter (would smooth β and likely improve results).
+- Benjamini–Hochberg FDR as a less conservative alternative to Bonferroni in screening.
+- Stop-loss / position sizing (Kelly or vol-targeting).
