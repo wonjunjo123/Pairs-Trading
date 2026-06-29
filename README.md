@@ -26,3 +26,5 @@ In-sample cointegration is largely a mirage here.
 That last point is the whole lesson of quantitative pairs research, and your project now demonstrates it rather than ignoring it. The honest write-up — "I screened 91 pairs, found 6 in-sample hits, and showed none survived Bonferroni or held out-of-sample" — is far more impressive than a cherry-picked Sharpe.
 
 So basically, I first tested these but they didn't work so I expanded the universe
+
+Refer to METHODOLOGY.md
