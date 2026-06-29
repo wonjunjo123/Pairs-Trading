@@ -44,6 +44,8 @@ COST_BPS     = 5.0    # one-way transaction cost per leg (bps)
 SLIPPAGE_BPS = 2.0    # one-way slippage per leg (bps)
 LOOKBACK_MIN = 60     # minimum rolling-estimation window (trading days)
 LOOKBACK_MUL = 2.5    # lookback = max(LOOKBACK_MIN, MUL × half_life)
+DELTA        = 0.0001 # Kalman process-noise parameter; controls β tracking speed
+              # ≈ 1/sqrt(delta) ≈ 100 days effective lookback at delta=0.0001
 
 ONE_WAY_COST = (COST_BPS + SLIPPAGE_BPS) / 10_000  # fractional cost per leg
 
@@ -89,6 +91,78 @@ def rolling_z(
     z      = (spread - mu_s) / sig_s
 
     return z, beta, spread
+
+
+# ─── Kalman filter hedge ratio and z-score ───────────────────────────────────
+
+def kalman_z(
+    log_y: pd.Series,
+    log_x: pd.Series,
+    delta: float,
+    lookback: int,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Kalman filter hedge ratio and spread z-score — fully causal.
+
+    State: θ = [α, β], modelled as a random walk (both drift slowly over time).
+    Observation: y_t = α_t + β_t · x_t + ε_t
+
+    The process-noise covariance Q = delta/(1−delta) · I controls tracking
+    speed: large delta → fast/reactive β; small delta → slow/smooth β.
+    Observation noise R is estimated online via an EWMA of squared innovations.
+
+    The z-score is the pre-update innovation (y_t − ŷ_{t|t−1}) normalised by
+    its rolling std — a point-in-time, causal signal.  β from the filter is
+    used for dollar-neutral position sizing just like rolling OLS.
+    """
+    y_arr = log_y.values
+    x_arr = log_x.values
+    n     = len(y_arr)
+
+    theta = np.zeros(2)         # [alpha, beta]; initialised at zero
+    P     = np.eye(2) * 1.0     # state covariance; grows quickly via Q
+    Q     = (delta / (1.0 - delta)) * np.eye(2)
+
+    innovations = np.full(n, np.nan)
+    betas       = np.full(n, np.nan)
+    R           = None           # estimated online from the first residual
+
+    for t in range(n):
+        if np.isnan(y_arr[t]) or np.isnan(x_arr[t]):
+            continue
+
+        H = np.array([[1.0, x_arr[t]]])   # shape (1, 2)
+
+        # Predict
+        P_pred = P + Q                     # (2, 2); F = I so F·P·F^T = P
+
+        # Pre-update innovation: ŷ uses last period's state estimate
+        e = y_arr[t] - (H @ theta).item()
+
+        # Update observation noise R via EWMA of squared residuals
+        R = e ** 2 if R is None else 0.97 * R + 0.03 * e ** 2
+
+        # Kalman gain: K = P_pred · H^T / (H · P_pred · H^T + R)
+        S = (H @ P_pred @ H.T).item() + R   # scalar innovation variance
+        K = (P_pred @ H.T) / S            # (2, 1)
+
+        # Update state
+        theta = theta + K.flatten() * e
+        P     = (np.eye(2) - K @ H) @ P_pred
+
+        innovations[t] = e
+        betas[t]       = theta[1]
+
+    innovations = pd.Series(innovations, index=log_y.index)
+    betas       = pd.Series(betas,       index=log_y.index)
+
+    # Z-score: normalise innovations by rolling std (same window as rolling_z)
+    sig_i  = innovations.rolling(lookback).std().clip(lower=1e-10)
+    z      = innovations / sig_i
+
+    # Spread for P&L: log_y − β·log_x  (α is already absorbed into the signal)
+    spread = log_y - betas * log_x
+
+    return z, betas, spread
 
 
 # ─── Signal generation ────────────────────────────────────────────────────────
@@ -246,39 +320,43 @@ def report(pnl: pd.Series, lagged: pd.Series, label: str) -> dict | None:
 # ─── Charts ───────────────────────────────────────────────────────────────────
 
 def plot_results(
-    results: list[dict],
+    pairs_results: list[tuple[str, dict | None, dict | None]],
     spy_equity: pd.Series,
     outfile: str = "backtest_equity.png",
 ) -> None:
-    n   = len(results)
+    """One subplot per pair; Rolling OLS and Kalman overlaid on the same axes."""
+    n   = len(pairs_results)
     fig = plt.figure(figsize=(13, 4.5 * n))
     gs  = fig.add_gridspec(n, 1, hspace=0.45)
 
-    for row, r in enumerate(results):
-        ax  = fig.add_subplot(gs[row])
-        eq  = r["equity"].dropna()
-        spy = spy_equity.reindex(eq.index).ffill().bfill()
-        spy = spy / spy.iloc[0]
+    colors = {"Rolling OLS": "steelblue", "Kalman": "darkorange"}
 
-        ax.plot(eq.index,  eq.values,  lw=1.5, label=r["label"])
-        ax.plot(spy.index, spy.values, lw=1,   alpha=0.5, color="grey",
-                linestyle="--", label="SPY (rebased to 1)")
+    for row, (pair_label, res_r, res_k) in enumerate(pairs_results):
+        ax = fig.add_subplot(gs[row])
+
+        ref_eq = None
+
+        for method, res, color in [("Rolling OLS", res_r, colors["Rolling OLS"]),
+                                    ("Kalman",      res_k, colors["Kalman"])]:
+            if res is None:
+                continue
+            eq = res["equity"].dropna()
+            if ref_eq is None:
+                ref_eq = eq
+            hr = f" Hit {res['hit_rate']*100:.0f}%" if not np.isnan(res["hit_rate"]) else ""
+            lbl = (f"{method}  CAGR {res['cagr']*100:+.1f}%  "
+                   f"Sh {res['sharpe']:.2f}  DD {res['max_dd']*100:.1f}%{hr}")
+            ax.plot(eq.index, eq.values, lw=1.5, color=color, label=lbl)
+
+        if ref_eq is not None:
+            spy = spy_equity.reindex(ref_eq.index).ffill().bfill()
+            spy = spy / spy.iloc[0]
+            ax.plot(spy.index, spy.values, lw=1, alpha=0.45, color="grey",
+                    linestyle="--", label="SPY (rebased)")
+
         ax.axhline(1, color="black", lw=0.4, linestyle=":")
-        ax.fill_between(eq.index, eq.values, 1,
-                        where=(eq.values < 1), alpha=0.12, color="red",
-                        label="_nolegend_")
-
-        hr_str = (f"  Hit {r['hit_rate']*100:.0f}%"
-                  if not np.isnan(r["hit_rate"]) else "")
-        ax.set_title(
-            f"{r['label']}   "
-            f"CAGR {r['cagr']*100:+.1f}%   "
-            f"Sharpe {r['sharpe']:.2f}   "
-            f"MaxDD {r['max_dd']*100:.1f}%"
-            f"{hr_str}",
-            fontsize=9,
-        )
-        ax.legend(fontsize=8)
+        ax.set_title(pair_label, fontsize=10, fontweight="bold")
+        ax.legend(fontsize=7.5)
         ax.set_ylabel("Growth of $1")
 
     plt.savefig(outfile, dpi=150, bbox_inches="tight")
@@ -297,34 +375,48 @@ if __name__ == "__main__":
     spy_ret    = log_p["SPY"].diff().dropna()
     spy_equity = (1 + spy_ret).cumprod()
 
-    results = []
+    # pairs_results: list of (pair_label, rolling_result, kalman_result)
+    pairs_results: list[tuple[str, dict | None, dict | None]] = []
+
     for y, x, hl, label in PAIRS:
         if y not in prices.columns or x not in prices.columns:
             print(f"\n── {label}  [SKIPPED — missing ticker data]")
             continue
         lookback = max(LOOKBACK_MIN, int(LOOKBACK_MUL * hl))
-        print(f"\n── {label}")
-        print(f"   lookback = {lookback} days  (= {LOOKBACK_MUL}× {hl:.0f}d half-life)")
+        print(f"\n{'━' * 60}")
+        print(f"  {label}   (lookback = {lookback} d)")
+        print(f"{'━' * 60}")
 
-        z, beta, _spread = rolling_z(log_p[y], log_p[x], lookback)
-        sig              = make_signal(z, ENTRY_Z, EXIT_Z)
-        pnl, lagged      = compute_pnl(prices, y, x, sig, beta)
-        res              = report(pnl, lagged, label)
-        if res is not None:
-            results.append(res)
+        # Rolling OLS
+        z_r, beta_r, _ = rolling_z(log_p[y], log_p[x], lookback)
+        sig_r           = make_signal(z_r, ENTRY_Z, EXIT_Z)
+        pnl_r, lag_r    = compute_pnl(prices, y, x, sig_r, beta_r)
+        res_r           = report(pnl_r, lag_r, f"{label}  [Rolling OLS]")
+
+        # Kalman filter
+        z_k, beta_k, _ = kalman_z(log_p[y], log_p[x], DELTA, lookback)
+        sig_k           = make_signal(z_k, ENTRY_Z, EXIT_Z)
+        pnl_k, lag_k    = compute_pnl(prices, y, x, sig_k, beta_k)
+        res_k           = report(pnl_k, lag_k, f"{label}  [Kalman δ={DELTA}]")
+
+        pairs_results.append((label, res_r, res_k))
 
     # ── Summary table ──────────────────────────────────────────────────────
-    print(f"\n\n{'═' * 72}")
-    print("  Summary")
-    print(f"{'═' * 72}")
-    hdr = (f"  {'Pair':<33} {'CAGR':>6}  {'Shrp':>5}  "
-           f"{'Sort':>5}  {'MaxDD':>6}  {'Hit%':>5}  {'#Tr':>4}")
+    print(f"\n\n{'═' * 76}")
+    print("  Summary — Rolling OLS vs Kalman filter")
+    print(f"{'═' * 76}")
+    hdr = (f"  {'Method':<42} {'CAGR':>6}  {'Shrp':>5}  "
+           f"{'MaxDD':>6}  {'Hit%':>5}  {'#Tr':>4}")
     print(hdr)
-    print(f"  {'─'*33}  {'─'*6}  {'─'*5}  {'─'*5}  {'─'*6}  {'─'*5}  {'─'*4}")
-    for r in results:
-        hr = f"{r['hit_rate']*100:.0f}%" if not np.isnan(r["hit_rate"]) else "  —"
-        print(f"  {r['label']:<33} {r['cagr']*100:>+5.1f}%  "
-              f"{r['sharpe']:>5.2f}  {r['sortino']:>5.2f}  "
-              f"{r['max_dd']*100:>5.1f}%  {hr:>5}  {r['n_trades']:>4}")
+    print(f"  {'─'*42}  {'─'*6}  {'─'*5}  {'─'*6}  {'─'*5}  {'─'*4}")
+    for pair_label, res_r, res_k in pairs_results:
+        for res in (res_r, res_k):
+            if res is None:
+                continue
+            hr = f"{res['hit_rate']*100:.0f}%" if not np.isnan(res["hit_rate"]) else "—"
+            print(f"  {res['label']:<42} {res['cagr']*100:>+5.1f}%  "
+                  f"{res['sharpe']:>5.2f}  {res['max_dd']*100:>5.1f}%  "
+                  f"{hr:>5}  {res['n_trades']:>4}")
+        print()
 
-    plot_results(results, spy_equity)
+    plot_results(pairs_results, spy_equity)
