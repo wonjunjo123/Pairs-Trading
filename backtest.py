@@ -175,7 +175,8 @@ def closed_trades(pnl: pd.Series, lagged: pd.Series) -> list[dict]:
             in_trade = True
             entry_i  = i
         elif in_trade and pos == 0:
-            trade_pnl = pnl.iloc[entry_i:i].sum()
+            # Include day i: position is 0 but pnl[i] carries the exit cost.
+            trade_pnl = pnl.iloc[entry_i:i + 1].sum()
             trades.append({
                 "entry":    lagged.index[entry_i],
                 "exit":     lagged.index[i - 1],
