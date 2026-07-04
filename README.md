@@ -31,3 +31,8 @@ Refer to METHODOLOGY.md
 
 # Questions:
 Why do we use log prices? What would happen if we used raw prices?
+
+# Procedure:
+1. Are data cointegrated?
+2. If so, what is the hedge ratio? (Through regression)
+3. Construct the spread
