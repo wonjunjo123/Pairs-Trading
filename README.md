@@ -28,3 +28,6 @@ That last point is the whole lesson of quantitative pairs research, and your pro
 So basically, I first tested these but they didn't work so I expanded the universe
 
 Refer to METHODOLOGY.md
+
+# Questions:
+Why do we use log prices? What would happen if we used raw prices?
