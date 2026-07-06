@@ -35,28 +35,29 @@ PAIRS = [
     ("FOXA", "FOX",  18.7, "FOXA / FOX [Dual-Class Sanity Check]"),
 ]
 
+years = 5
 END   = datetime.date.today()
-START = END - datetime.timedelta(days=365 * 5)
+START = END - datetime.timedelta(days=365 * years)
 
-ENTRY_Z      = 2.0    # open position when |z| ≥ this
-EXIT_Z       = 0.5    # close when |z| has reverted to ≤ this
-COST_BPS     = 5.0    # one-way transaction cost per leg (bps)
+# Macro-parameters
+ENTRY_Z = 2.0    # open position when |z| ≥ this
+EXIT_Z = 0.5    # close when |z| has reverted to ≤ this
+COST_BPS = 5.0    # one-way transaction cost per leg (bps)
 SLIPPAGE_BPS = 2.0    # one-way slippage per leg (bps)
 LOOKBACK_MIN = 60     # minimum rolling-estimation window (trading days)
 LOOKBACK_MUL = 2.5    # lookback = max(LOOKBACK_MIN, MUL × half_life)
-DELTA        = 0.0001 # Kalman process-noise parameter; controls β tracking speed
+DELTA = 0.0001 # Kalman process-noise parameter; controls β tracking speed
               # ≈ 1/sqrt(delta) ≈ 100 days effective lookback at delta=0.0001
 
-ONE_WAY_COST = (COST_BPS + SLIPPAGE_BPS) / 10_000  # fractional cost per leg
+ONE_WAY_COST = (COST_BPS + SLIPPAGE_BPS) / 10_000  # fractional cost percentage per leg
 
 
-# ─── Data ─────────────────────────────────────────────────────────────────────
-
+# Importing data
 def fetch(tickers: list[str]) -> pd.DataFrame:
     raw = yf.download(tickers, start=START, end=END,
                       auto_adjust=True, progress=False)["Close"]
     if isinstance(raw, pd.Series):
-        raw = raw.to_frame(name=tickers[0])
+        raw = raw.to_frame(name=tickers[0]) # just to convert single Series to df if necessary
     # Drop tickers with less than 95% coverage, then forward-fill small gaps.
     # Using dropna(axis=1, thresh=...) keeps the rest of the tickers intact
     # even if one fails (avoids losing the whole DataFrame).
@@ -64,12 +65,11 @@ def fetch(tickers: list[str]) -> pd.DataFrame:
     raw = raw.dropna(axis=1, thresh=min_rows)
     missing = set(tickers) - set(raw.columns)
     if missing:
-        print(f"  [warn] tickers dropped (insufficient data): {sorted(missing)}")
+        print(f"  [warning] tickers dropped (insufficient data): {sorted(missing)}")
     return raw.ffill().dropna()
 
 
-# ─── Rolling hedge ratio and z-score ─────────────────────────────────────────
-
+# Rolling hedge ratio and z-score
 def rolling_z(
     log_y: pd.Series, log_x: pd.Series, lookback: int
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
