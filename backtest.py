@@ -80,7 +80,7 @@ def rolling_z(
     Every estimate at time t uses only data on [t−lookback, t], so nothing
     from the future can influence a signal or position.
     """
-    r    = log_y.rolling(lookback).corr(log_x)
+    r = log_y.rolling(lookback).corr(log_x)
     sy   = log_y.rolling(lookback).std()
     sx   = log_x.rolling(lookback).std().clip(lower=1e-10)
     beta = r * sy / sx
@@ -93,8 +93,7 @@ def rolling_z(
     return z, beta, spread
 
 
-# ─── Kalman filter hedge ratio and z-score ───────────────────────────────────
-
+# Kalman filter hedge ratio and z-score
 def kalman_z(
     log_y: pd.Series,
     log_x: pd.Series,
@@ -363,16 +362,14 @@ def plot_results(
     print(f"\nSaved equity chart → {outfile}")
 
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     all_tickers = sorted({t for y, x, *_ in PAIRS for t in (y, x)} | {"SPY"})
     print(f"Downloading {len(all_tickers)} tickers: {all_tickers}")
     print(f"Period: {START} → {END}\n")
     prices = fetch(all_tickers)
-    log_p  = np.log(prices)
+    log_prices  = np.log(prices)
 
-    spy_ret    = log_p["SPY"].diff().dropna()
+    spy_ret = log_prices["SPY"].diff().dropna()
     spy_equity = (1 + spy_ret).cumprod()
 
     # pairs_results: list of (pair_label, rolling_result, kalman_result)
@@ -382,19 +379,19 @@ if __name__ == "__main__":
         if y not in prices.columns or x not in prices.columns:
             print(f"\n── {label}  [SKIPPED — missing ticker data]")
             continue
-        lookback = max(LOOKBACK_MIN, int(LOOKBACK_MUL * hl))
+        lookback = max(LOOKBACK_MIN, int(LOOKBACK_MUL * hl)) # we want rolling estimates to cover enough mean-reversion cycles to be stable
         print(f"\n{'━' * 60}")
         print(f"  {label}   (lookback = {lookback} d)")
         print(f"{'━' * 60}")
 
         # Rolling OLS
-        z_r, beta_r, _ = rolling_z(log_p[y], log_p[x], lookback)
+        z_r, beta_r, _ = rolling_z(log_prices[y], log_prices[x], lookback)
         sig_r           = make_signal(z_r, ENTRY_Z, EXIT_Z)
         pnl_r, lag_r    = compute_pnl(prices, y, x, sig_r, beta_r)
         res_r           = report(pnl_r, lag_r, f"{label}  [Rolling OLS]")
 
         # Kalman filter
-        z_k, beta_k, _ = kalman_z(log_p[y], log_p[x], DELTA, lookback)
+        z_k, beta_k, _ = kalman_z(log_prices[y], log_prices[x], DELTA, lookback)
         sig_k           = make_signal(z_k, ENTRY_Z, EXIT_Z)
         pnl_k, lag_k    = compute_pnl(prices, y, x, sig_k, beta_k)
         res_k           = report(pnl_k, lag_k, f"{label}  [Kalman δ={DELTA}]")
